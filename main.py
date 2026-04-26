@@ -1,11 +1,12 @@
 import asyncio
 import os
 import time
-from loguru import logger
-from dotenv import load_dotenv
+
 from async_substrate_interface import AsyncSubstrateInterface
-from scalecodec.utils.ss58 import ss58_encode
 from bittensor.core.async_subtensor import AsyncSubtensor
+from dotenv import load_dotenv
+from loguru import logger
+from scalecodec.utils.ss58 import ss58_encode
 
 from db import DB_PATH, init_db, save_alpha_trades, save_block_snapshots
 
