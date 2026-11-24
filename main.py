@@ -8,11 +8,14 @@ from dotenv import load_dotenv
 from loguru import logger
 from scalecodec.utils.ss58 import ss58_encode
 
-from db import DB_PATH, init_db, save_alpha_trades, save_block_snapshots
+from db import DB_PATH, init_db, last_snapshot_block, save_alpha_trades, save_block_snapshots
+from tracking import blocks_to_process
 
 load_dotenv()
 NETWORK = os.getenv("NETWORK", "finney")
 WS_ENDPOINT = os.getenv("WS_ENDPOINT", "wss://entrypoint-finney.opentensor.ai:443")
+# Lite nodes prune state after a few hundred blocks; 0 disables the cap (archive nodes).
+MAX_BACKFILL_BLOCKS = int(os.getenv("MAX_BACKFILL_BLOCKS", "100"))
 
 STAKE_ADDED = "SubtensorModule.StakeAdded"
 STAKE_REMOVED = "SubtensorModule.StakeRemoved"
@@ -101,19 +104,36 @@ async def main():
     try:
         logger.info("Connecting to subtensor (network={})", NETWORK)
         async with AsyncSubtensor(network=NETWORK) as subtensor:
+            last_block = last_snapshot_block(conn)
+            if last_block is not None:
+                logger.info("Resuming after block {}", last_block)
             logger.info("Subtensor ready; waiting for blocks")
             while True:
                 await subtensor.wait_for_block()
                 block = await subtensor.get_current_block()
+                blocks, dropped = blocks_to_process(last_block, block, MAX_BACKFILL_BLOCKS)
+                if not blocks:
+                    continue
+                if dropped:
+                    logger.warning("{} block(s) exceed the {}-block backfill limit; trades in blocks {}-{} were not recorded", dropped, MAX_BACKFILL_BLOCKS, blocks[0] - dropped, blocks[0] - 1)
+
+                # Trades first: the snapshot marks the resume point, so it must not
+                # be saved until every earlier block's trades are in the database.
+                trade_count = 0
+                for trade_block in blocks:
+                    trades = await extract_alpha_trades(substrate, trade_block)
+                    trade_count += save_alpha_trades(conn, trades)
+
                 t0 = time.perf_counter()
                 subnets = await subtensor.all_subnets(block=block)
                 t1 = time.perf_counter()
                 logger.info("all_subnets took {} seconds", t1 - t0)
+                subnet_count = 0
                 if subnets is not None:
                     save_block_snapshots(conn, block, subnets)
-                    trades = await extract_alpha_trades(substrate, block)
-                    trade_count = save_alpha_trades(conn, trades)
-                    logger.info("Block {}: saved {} subnet row(s), {} trade row(s)", block, len(subnets), trade_count)
+                    subnet_count = len(subnets)
+                logger.info("Block {}: saved {} subnet row(s), {} trade row(s) from {} block(s)", block, subnet_count, trade_count, len(blocks))
+                last_block = block
     finally:
         conn.close()
         logger.info("Database connection closed")
