@@ -41,6 +41,12 @@ def init_db(path: Path | None = None) -> sqlite3.Connection:
     return conn
 
 
+def last_snapshot_block(conn: sqlite3.Connection) -> int | None:
+    """Newest block with a saved snapshot, used to resume after a restart."""
+    row = conn.execute("SELECT MAX(block) FROM subnet_snapshots").fetchone()
+    return row[0] if row else None
+
+
 def save_block_snapshots(conn: sqlite3.Connection, block: int, subnets: list) -> None:
     rows = [
         (
